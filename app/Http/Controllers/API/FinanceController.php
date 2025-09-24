@@ -14,31 +14,40 @@ class FinanceController extends Controller
     public function verify($paymentId, Request $req, LedgerPostingService $posting)
     {
         // allow 'keuangan' role or the student who owns the invoice to verify
-        $payment = DB::table('payments')->where('id',$paymentId)->first();
-        $invoice = DB::table('invoices')->where('id', $payment->invoice_id)->first();
+        $payment = DB::table('payments')->where('id', $paymentId)->first();
+        if (! $payment) {
+            abort(404, 'Payment not found.');
+        }
 
-        try {
-            Gate::authorize('isRole', 'keuangan');
-        } catch (\Throwable $e) {
-            // if not keuangan, ensure current user is owner of invoice
-            if (auth()->id() !== (int) $invoice->student_id) {
+        $invoice = DB::table('invoices')->where('id', $payment->invoice_id)->first();
+        if (! $invoice) {
+            abort(404, 'Invoice not found.');
+        }
+
+        if (! Gate::allows('isRole', 'keuangan')) {
+            $studentId = DB::table('students')
+                ->where('user_id', auth()->id())
+                ->value('id');
+
+            if ((int) $invoice->student_id !== (int) $studentId) {
                 abort(403);
             }
         }
 
         // mark payment verified
-        DB::table('payments')->where('id',$paymentId)->update(['status'=>'verified','updated_at'=>now()]);
+        DB::table('payments')
+            ->where('id', $paymentId)
+            ->update(['status' => 'verified', 'updated_at' => now()]);
+
+        // refresh payment after status change to keep response consistent
+        $payment = DB::table('payments')->where('id', $paymentId)->first();
 
         // idempotent posting: use payment_id as posting id
-    // refresh
-    $payment = DB::table('payments')->where('id',$paymentId)->first();
-    $invoice = DB::table('invoices')->where('id',$payment->invoice_id)->first();
-
-        $postingId = 'payment_'.$paymentId;
+        $postingId = 'payment_' . $paymentId;
         $ledgerId = 1; // default ledger for demo
-        $posted = $posting->post($postingId, $ledgerId, (float)$payment->amount, 'credit');
+        $posted = $posting->post($postingId, $ledgerId, (float) $payment->amount, 'credit');
 
-        event(new PaymentVerified($paymentId));
+        event(new PaymentVerified((int) $paymentId));
 
         return response()->json(['verified' => true, 'posted' => $posted]);
     }
